@@ -1,0 +1,16 @@
+# Data — re-fetched via scripts/fetch_*.py, not committed
+data/raw/
+data/processed/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+*.env
+
+# OS
+.DS_Store
