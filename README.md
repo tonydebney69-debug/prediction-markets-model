@@ -110,30 +110,68 @@ supposed to be predicting.
 history endpoint, not the settled-market summary's last trade. Not yet
 built — the current fetch only pulls the settlement summary.
 
-### 2. The one apparent pattern found is very likely a structural artifact, not a bias
+### 2. The Sports gap — partly fixed by event normalisation, partly a new open question (`scripts/event_field_normalization.py`)
 
-Restricting to the genuinely-uncertain 6% and bucketing by price shows
-"yes" looking heavily overpriced in the middle of the range (e.g. the
-16–51¢ bucket: 32.0% average implied price, only 5.5% actual yes rate — a
-26.5-point gap). That's a big, exciting-looking number, and it should be
-distrusted precisely because of that.
+The pilot found "yes" looking heavily overpriced in the middle of the
+price range, concentrated in Sports (61% of the genuinely-uncertain
+subset). The suspected cause: many Sports markets are one-of-many
+contracts over an exhaustive field ("will William Byron have the fastest
+lap?" is one of ~20-40 near-identical per-driver markets for a race with
+exactly one winner) pooled without grouping by event first — the same
+problem horse racing solved by normalising each runner's price against
+its own race's overround.
 
-**Why:** 61% of that subset is Sports, and a large share of Kalshi's sports
-markets aren't independent yes/no propositions — they're one-of-many
-markets over an exhaustive field, split into separate binary contracts.
-"Will William Byron have the fastest lap?" is one of ~20-40 near-identical
-per-driver markets for a single race with exactly one winner. Pool many
-such contracts by price bucket without grouping by the underlying event
-first, and the average implied price will run well above the average
-actual win rate *by construction* — mathematically the same problem
-horse racing solved by normalising each runner's price against its own
-race's overround. That normalisation hasn't been done here yet for
-multi-entrant sports markets, so the 26.5-point gap is not treated as a
-finding.
+**Confirmed and fixed.** Classified every Sports series empirically:
+group its markets by event, and check how many resolve "yes" per event
+across all its events. A series where that's consistently exactly 1 is
+an exhaustive field (fastest-lap, match-winner, 3-way, exact-score); a
+series where it's often 0, 2, 3+ is something else (nested over/under
+ladders, independent props) and was left untouched. **22 of 49
+classifiable Sports series (4,300 of 27,330 Sports rows) were exhaustive
+fields**, each renormalised the way a horse race is: divide each
+contract's price by the sum of all its field's prices.
 
-The non-Sports categories in this subset don't have that structural
-problem (each is a standalone yes/no proposition), but they're too small
-to read anything into yet:
+The fix visibly worked. Restricting to the exhaustive-field-normalised
+markets plus genuine standalone singles (the "clean" subset, n=15,211):
+
+| Bucket (normalised price) | n | Implied | Actual | Edge |
+|---|---|---|---|---|
+| 2.9% | 133 | 2.9% | 0.0% | -2.9 |
+| 4.8% | 133 | 4.8% | 0.0% | -4.8 |
+| 11.4% | 134 | 11.4% | 1.5% | -9.9 |
+| 38.8% | 132 | 38.8% | 39.4% | **+0.6** |
+| 88.2% | 203 | 88.2% | 98.0% | +9.8 |
+| 96.7% | 63 | 96.7% | 96.8% | **+0.1** |
+
+Compare to the pre-fix middle and top buckets, which ran -24 to -33
+points — the normalisation removed most of the apparent bias. What's
+left in the low buckets (n≈133 each) is small enough to plausibly be
+noise, not confirmed either way.
+
+**But it isn't the whole story.** The markets left alone — nested
+over/under and spread ladders (total runs, game spreads: `KXMLBF5TOTAL`,
+`KXWNBA2QSPREAD`, `KXUELTEAMTOTAL` and similar) — still show large gaps
+after the fix, because the fix was never meant to touch them:
+
+| Bucket | n | Implied | Actual | Edge |
+|---|---|---|---|---|
+| 20.9% | 75 | 20.9% | 1.3% | -19.6 |
+| 43.1% | 78 | 43.1% | 1.3% | -41.8 |
+| 75.2% | 81 | 75.2% | 39.5% | -35.7 |
+
+These are a genuinely different structure (several thresholds under one
+game can resolve yes simultaneously — "over 3.5 runs" and "over 4.5 runs"
+aren't mutually exclusive the way fastest-lap entrants are), so forcing
+them into the same field-sum normalisation would be wrong in the other
+direction. **This is now an open question, not a fix** — something about
+how these nested-ladder markets settle looks substantially miscalibrated,
+and the mechanism isn't understood yet. Flagged for follow-up, not
+reported as a result: n is small (75-90 per bucket) and no hypothesis for
+*why* has been tested.
+
+The non-Sports categories in the original uncertain-price subset don't
+have either structural problem (each is a standalone yes/no proposition),
+but they're too small to read anything into yet:
 
 | Category | n | Implied yes | Actual yes |
 |---|---|---|---|
@@ -152,14 +190,21 @@ distinguishable from noise yet.
 
 No result here clears the bar this project (and its two predecessors)
 sets for a finding. That's not a failure of the pilot — it's exactly what
-a pilot is for. Before this can produce a trustworthy answer to "is Kalshi
-as efficient as Betfair," it needs:
+a pilot is for. Status on what it needs before it can produce a
+trustworthy answer to "is Kalshi as efficient as Betfair":
 
-1. **Event-grouped normalisation for multi-entrant markets** (the Sports
-   fastest-lap/team-total problem above) — the single highest-priority fix.
+1. ~~Event-grouped normalisation for exhaustive multi-entrant markets~~ —
+   **done** (`event_field_normalization.py`). Fixed most of the Sports gap;
+   also surfaced a second, different, still-unexplained gap in nested
+   over/under and spread markets — see finding #2.
 2. **A real pre-resolution price snapshot** (fixed horizon via candlesticks,
-   not last-trade) instead of the near-tautological one used here.
-3. **More data** — 800 of ~12,475 series, concentrated in 2 months because
+   not last-trade) instead of the near-tautological one used here — still
+   open, and now the higher-priority fix given #1 turned out to be only
+   part of the Sports picture.
+3. **Understand the nested-ladder gap** (over/under, spreads) before
+   dismissing or trusting it — needs a mechanism hypothesis, not just a
+   number, per this project's own rules.
+4. **More data** — 800 of ~12,475 series, concentrated in 2 months because
    that's what a random sample of mostly-recent series happened to
    produce. The full crawl (`fetch_markets.py` with no `--limit-series`)
    reaches much further back and would give real category-level sample
@@ -187,8 +232,9 @@ method yet.
 scripts/
   fetch_series.py       # pull Kalshi's full series catalogue
   fetch_markets.py      # pull settled markets per series (resumable, rate-limited)
-  load_data.py          # combine + discovery/holdout split -> parquet
-  calibration_check.py  # does last price predict actual outcome? (+ category breakdown)
+  load_data.py                   # combine + discovery/holdout split -> parquet
+  calibration_check.py           # does last price predict actual outcome? (+ category breakdown)
+  event_field_normalization.py   # fixes the exhaustive-field Sports bug from finding #2
 data/
   raw/                  # gitignored — re-fetch with fetch_series.py + fetch_markets.py
   processed/            # gitignored — rebuild with load_data.py
