@@ -28,28 +28,55 @@ MARKETS_DIR = RAW / "markets_by_series"
 from fetch_series import TARGET_CATEGORIES  # noqa: E402
 
 
+MAX_RETRIES = 4
+MAX_PAGES_PER_SERIES = 25  # 25 * 200 = 5,000 markets - a safety cap, not a real limit
+
+
 def fetch_settled_markets(series_ticker: str, sleep: float) -> list[dict]:
+    """Never loops forever: each page gets at most MAX_RETRIES attempts,
+    then this series is skipped (logged, not silently dropped) so one bad
+    request can't hang the whole crawl. Also hard-capped at
+    MAX_PAGES_PER_SERIES - some series (multivariate combo markets, see
+    the MVE filter below) settle so continuously that pagination never
+    naturally ends; this is the safety net for whichever ones slip through."""
     out = []
     cursor = None
-    while True:
+    for _page in range(MAX_PAGES_PER_SERIES):
         params = {"series_ticker": series_ticker, "status": "settled", "limit": 200}
         if cursor:
             params["cursor"] = cursor
-        try:
-            r = requests.get(f"{BASE}/markets", params=params, timeout=20)
-        except requests.RequestException:
-            time.sleep(1.0)
-            continue
-        if r.status_code == 429:
-            time.sleep(2.0)
-            continue
-        r.raise_for_status()
-        data = r.json()
+        data = None
+        for attempt in range(MAX_RETRIES):
+            if attempt > 0:
+                print(f"  ... retrying {series_ticker} (attempt {attempt + 1})", flush=True)
+            try:
+                r = requests.get(f"{BASE}/markets", params=params, timeout=(5, 8))
+            except requests.RequestException as e:
+                print(f"  ! {series_ticker}: network error ({e}), "
+                      f"attempt {attempt + 1}/{MAX_RETRIES}", flush=True)
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            if r.status_code == 429:
+                time.sleep(2.0 * (attempt + 1))
+                continue
+            if r.status_code >= 500:
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            r.raise_for_status()
+            data = r.json()
+            break
+        if data is None:
+            print(f"  x {series_ticker}: giving up after {MAX_RETRIES} attempts, skipping", flush=True)
+            break
         out.extend(data.get("markets", []))
         cursor = data.get("cursor")
         if not cursor or not data.get("markets"):
             break
         time.sleep(sleep)
+    else:
+        print(f"  ! {series_ticker}: hit the {MAX_PAGES_PER_SERIES}-page cap "
+              f"({len(out)} markets) - likely a combo series that slipped past "
+              f"the MVE filter; truncated, not stuck.", flush=True)
     return out
 
 
@@ -68,6 +95,14 @@ if __name__ == "__main__":
 
     all_series = json.loads(SERIES_FILE.read_text(encoding="utf-8"))
     targets = [s for s in all_series if s.get("category") in args.categories]
+    n_before = len(targets)
+    # Multivariate/combo series (ticker contains "MVE") settle so continuously
+    # they can generate thousands of markets an hour - excluded at the source,
+    # not just filtered out downstream, so the crawler doesn't burn its whole
+    # run on one series. load_data.py double-checks this at the market level too.
+    targets = [s for s in targets if "MVE" not in s.get("ticker", "")]
+    if n_before != len(targets):
+        print(f"Excluded {n_before - len(targets)} multivariate/combo series (ticker contains 'MVE').")
 
     if args.seed:
         random.Random(args.seed).shuffle(targets)
@@ -94,9 +129,10 @@ if __name__ == "__main__":
         total_markets += len(markets)
         if not markets:
             empty += 1
-        if fetched % 50 == 0:
+        if fetched % 10 == 0:
             print(f"[{i+1}/{len(targets)}] {fetched} series fetched, "
-                  f"{total_markets} settled markets so far ({skipped} already cached)")
+                  f"{total_markets} settled markets so far ({skipped} already cached)",
+                  flush=True)
 
     print(f"\nDone. {fetched} series fetched this run ({skipped} were already cached), "
           f"{empty} had zero settled markets, {total_markets} settled markets collected.")

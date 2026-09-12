@@ -76,6 +76,22 @@ if __name__ == "__main__":
           + (f" in {args.category}" if args.category else " across all target categories"))
     print(f"date range: {df['close_time'].min()} -> {df['close_time'].max()}\n")
 
+    extreme = ((df["implied_p"] <= 0.02) | (df["implied_p"] >= 0.98)).mean()
+    if extreme > 0.5:
+        print(f"WARNING: {extreme:.0%} of this sample has a last price at or beyond 2c/98c.\n"
+              "That's expected for fast-resolving markets where the last trade happens after\n"
+              "the outcome is effectively known - see README 'Findings #1'. The bucket table\n"
+              "below will be dominated by these near-certain contracts; read it with that in\n"
+              "mind, and see --category plus the README for the cleaner uncertain-price subset.\n")
+    if not args.category:
+        sports_share = (df["category"] == "Sports").mean()
+        if sports_share > 0.3:
+            print(f"WARNING: {sports_share:.0%} of this sample is Sports. Many Sports markets are\n"
+                  "one-of-many-entrant fields (e.g. per-driver 'fastest lap') split into separate\n"
+                  "binary contracts, not independent yes/no propositions - pooling them by price\n"
+                  "without grouping by event first will look like bias that isn't there. See\n"
+                  "README 'Findings #2' before trusting any pooled Sports number.\n")
+
     print("Bucket 0 = cheapest 'yes' (market thinks unlikely) ... "
           f"bucket {args.buckets - 1} = most expensive 'yes' (market thinks likely)\n")
     print(calibration_table(df, args.buckets).to_string())
